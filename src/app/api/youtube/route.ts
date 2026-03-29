@@ -32,15 +32,18 @@ async function fetchMetadata(videoId: string): Promise<{ title: string; channel:
   }
 }
 
-async function fetchTranscript(videoId: string): Promise<string> {
+async function fetchTranscript(videoId: string): Promise<{ text: string; error?: string }> {
   try {
-    // youtube-transcript-plus uses innertube ANDROID API internally
     const segments = await fetchYTTranscript(videoId);
-    if (!segments || !Array.isArray(segments) || segments.length === 0) return '';
-    return segments.map((s: { text: string }) => s.text).join(' ');
-  } catch (e) {
-    console.error('Transcript fetch error:', e);
-    return '';
+    if (!segments || !Array.isArray(segments) || segments.length === 0) {
+      return { text: '', error: 'Geen segmenten teruggekomen' };
+    }
+    const text = segments.map((s: { text: string }) => s.text).join(' ');
+    return { text };
+  } catch (e: any) {
+    const msg = e?.message || String(e);
+    console.error('Transcript fetch error:', msg);
+    return { text: '', error: msg };
   }
 }
 
@@ -57,10 +60,13 @@ export async function POST(request: Request) {
 
     // Use client-provided transcript if available, else fetch server-side
     let transcript = '';
+    let transcriptError = '';
     if (typeof client_transcript === 'string' && client_transcript.length > 50) {
       transcript = client_transcript;
     } else {
-      transcript = await fetchTranscript(videoId);
+      const result = await fetchTranscript(videoId);
+      transcript = result.text;
+      transcriptError = result.error || '';
     }
 
     const content = [
@@ -100,6 +106,7 @@ export async function POST(request: Request) {
       thumbnail: meta.thumbnail,
       video_id: videoId,
       has_transcript: transcript.length > 100,
+      transcript_error: transcriptError || null,
       source_id: result.sourceId,
       chunks_created: result.chunksCreated,
       status: result.status,
