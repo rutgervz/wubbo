@@ -16,8 +16,11 @@ async function getEmbedding(text: string): Promise<number[]> {
   return data.data[0].embedding;
 }
 
+interface RAGSource { id: string; title: string; type: string }
+interface RAGResult { context: string; sourceCount: number; sources: RAGSource[] }
+
 // Server-side RAG: search Supabase directly
-async function fetchRAGContext(query: string): Promise<{ context: string; sourceCount: number }> {
+async function fetchRAGContext(query: string): Promise<RAGResult> {
   const embedding = await getEmbedding(query);
 
   // Call Supabase RPC directly
@@ -41,14 +44,14 @@ async function fetchRAGContext(query: string): Promise<{ context: string; source
 
   if (!res.ok) {
     console.error('RAG search failed:', res.status, await res.text());
-    return { context: '', sourceCount: 0 };
+    return { context: '', sourceCount: 0, sources: [] };
   }
 
   const chunks = await res.json();
-  if (!chunks || chunks.length === 0) return { context: '', sourceCount: 0 };
+  if (!chunks || chunks.length === 0) return { context: '', sourceCount: 0, sources: [] };
 
   // Deduplicate by source_id
-  const seen = new Map();
+  const seen = new Map<string, any>();
   for (const chunk of chunks) {
     if (!seen.has(chunk.source_id) || chunk.similarity > seen.get(chunk.source_id).similarity) {
       seen.set(chunk.source_id, chunk);
@@ -56,15 +59,17 @@ async function fetchRAGContext(query: string): Promise<{ context: string; source
   }
 
   const parts: string[] = [];
+  const sources: RAGSource[] = [];
   for (const chunk of seen.values()) {
     let entry = `--- ${chunk.source_title} (${chunk.source_type}, ${chunk.person_name || '?'}, ${chunk.source_date || '?'}) ---\n`;
     if (chunk.context_before) entry += chunk.context_before.substring(0, 200) + '\n';
     entry += chunk.content;
     if (chunk.context_after) entry += '\n' + chunk.context_after.substring(0, 200);
     parts.push(entry);
+    sources.push({ id: chunk.source_id, title: chunk.source_title, type: chunk.source_type });
   }
 
-  return { context: parts.join('\n\n'), sourceCount: seen.size };
+  return { context: parts.join('\n\n'), sourceCount: seen.size, sources };
 }
 
 export async function POST(request: Request) {
@@ -75,7 +80,7 @@ export async function POST(request: Request) {
   const query = lastUserMessage?.text || lastUserMessage?.content || '';
 
   // Server-side RAG: search the knowledge base
-  const rag = query ? await fetchRAGContext(query) : { context: '', sourceCount: 0 };
+  const rag: RAGResult = query ? await fetchRAGContext(query) : { context: '', sourceCount: 0, sources: [] };
 
   // Build Wubbo system prompt
   let systemPrompt = `Je bent Wubbo, de kennisbank van Rutger en Annelie op Schiermonnikoog.
@@ -122,8 +127,14 @@ Gebruik nooit dash/hyphen bullets. Geef lively, scherpe antwoorden in de Jiskefe
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
 
+  // Build context metadata for client
+  const contextEvent = JSON.stringify({ type: 'context', sourceCount: rag.sourceCount, sources: rag.sources });
+
   const stream = new ReadableStream({
     async start(controller) {
+      // Emit context metadata first so UI can show "N bronnen" line before text arrives
+      controller.enqueue(encoder.encode(`data: ${contextEvent}\n\n`));
+
       const reader = response.body?.getReader();
       if (!reader) { controller.close(); return; }
 
