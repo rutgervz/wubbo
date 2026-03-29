@@ -33,26 +33,72 @@ async function fetchMetadata(videoId: string): Promise<{ title: string; channel:
   }
 }
 
-async function fetchTranscript(videoId: string): Promise<string> {
-  try {
-    // Try Dutch first, then English, then any language
-    let segments;
+async function fetchTranscript(videoId: string): Promise<{ text: string; error?: string }> {
+  // youtube-transcript uses innertube API (Android client) which bypasses session-bound URLs
+  const attempts = [
+    () => YoutubeTranscript.fetchTranscript(videoId, { lang: 'nl' }),
+    () => YoutubeTranscript.fetchTranscript(videoId, { lang: 'en' }),
+    () => YoutubeTranscript.fetchTranscript(videoId),
+  ];
+
+  for (const attempt of attempts) {
     try {
-      segments = await YoutubeTranscript.fetchTranscript(videoId, { lang: 'nl' });
-    } catch {
-      try {
-        segments = await YoutubeTranscript.fetchTranscript(videoId, { lang: 'en' });
-      } catch {
-        segments = await YoutubeTranscript.fetchTranscript(videoId);
+      const segments = await attempt();
+      if (segments && segments.length > 0) {
+        const text = segments.map((s: { text: string }) => s.text).join(' ');
+        if (text.length > 20) return { text };
+      }
+    } catch (e) {
+      // Continue to next attempt
+      console.log('Transcript attempt failed:', String(e));
+    }
+  }
+
+  // Fallback: try fetching via raw innertube API directly
+  try {
+    const innertubeRes = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'com.google.android.youtube/20.10.38 (Linux; U; Android 14)',
+      },
+      body: JSON.stringify({
+        context: { client: { clientName: 'ANDROID', clientVersion: '20.10.38' } },
+        videoId,
+      }),
+    });
+    if (innertubeRes.ok) {
+      const playerData = await innertubeRes.json();
+      const tracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+      if (tracks && tracks.length > 0) {
+        const track = tracks.find((t: any) => t.languageCode === 'nl')
+          || tracks.find((t: any) => t.languageCode === 'en')
+          || tracks[0];
+        if (track?.baseUrl) {
+          const xmlRes = await fetch(track.baseUrl, {
+            headers: { 'User-Agent': 'com.google.android.youtube/20.10.38 (Linux; U; Android 14)' },
+          });
+          if (xmlRes.ok) {
+            const xml = await xmlRes.text();
+            const lines: string[] = [];
+            const regex = /<text[^>]*>([\s\S]*?)<\/text>/g;
+            let m;
+            while ((m = regex.exec(xml)) !== null) {
+              const text = m[1]
+                .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+                .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/\n/g, ' ').trim();
+              if (text) lines.push(text);
+            }
+            if (lines.length > 0) return { text: lines.join(' ') };
+          }
+        }
       }
     }
-
-    if (!segments || segments.length === 0) return '';
-    return segments.map((s: { text: string }) => s.text).join(' ');
   } catch (e) {
-    console.error('Transcript fetch error:', e);
-    return '';
+    console.log('Innertube fallback failed:', String(e));
   }
+
+  return { text: '', error: 'Transcript ophalen mislukt na meerdere pogingen' };
 }
 
 export async function POST(request: Request) {
@@ -64,10 +110,11 @@ export async function POST(request: Request) {
     if (!videoId) return Response.json({ error: 'Ongeldige YouTube URL' }, { status: 400 });
 
     // Fetch metadata and transcript in parallel
-    const [meta, transcript] = await Promise.all([
+    const [meta, transcriptResult] = await Promise.all([
       fetchMetadata(videoId),
       fetchTranscript(videoId),
     ]);
+    const transcript = transcriptResult.text;
 
     // Build content
     const content = [
@@ -105,6 +152,7 @@ export async function POST(request: Request) {
       thumbnail: meta.thumbnail,
       video_id: videoId,
       has_transcript: transcript.length > 100,
+      transcript_error: transcriptResult.error || null,
       source_id: result.sourceId,
       chunks_created: result.chunksCreated,
       status: result.status,
