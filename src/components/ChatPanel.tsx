@@ -7,7 +7,7 @@ interface Message {
   content: string
 }
 
-export default function ChatPanel({ graphContext }: { graphContext?: string }) {
+export default function ChatPanel({ graphContext, onClose }: { graphContext?: string; onClose?: () => void }) {
   const [open, setOpen] = useState(false)
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
@@ -126,7 +126,7 @@ export default function ChatPanel({ graphContext }: { graphContext?: string }) {
             · {graphContext}
           </span>
         )}
-        <button onClick={() => setOpen(false)} style={closeBtnStyle}>×</button>
+        <button onClick={() => { setOpen(false); onClose?.() }} style={closeBtnStyle}>×</button>
       </div>
 
       {/* Messages */}
