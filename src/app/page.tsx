@@ -6,6 +6,7 @@ import LoginScreen from '@/components/LoginScreen'
 import SearchBar from '@/components/SearchBar'
 import StreamView from '@/components/StreamView'
 import ChatPanel from '@/components/ChatPanel'
+import SourceDetail from '@/components/SourceDetail'
 import { createBrowserClient } from '@/lib/supabase'
 
 const KnowledgeGraph = dynamic(() => import('@/components/KnowledgeGraph'), {
@@ -42,11 +43,12 @@ interface GraphData {
 }
 
 export default function Home() {
-  const [authed, setAuthed] = useState<boolean | null>(null) // null = checking
+  const [authed, setAuthed] = useState<boolean | null>(null)
   const [view, setView] = useState<View>('graph')
   const [data, setData] = useState<GraphData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [selectedNodeLabel, setSelectedNodeLabel] = useState<string | null>(null)
+  const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null)
 
   // Check existing session
   useEffect(() => {
@@ -69,6 +71,15 @@ export default function Home() {
   }, [authed])
 
   const handleLogin = useCallback(() => setAuthed(true), [])
+
+  const handleLogout = useCallback(async () => {
+    const supabase = createBrowserClient()
+    await supabase.auth.signOut()
+    setAuthed(false)
+    setData(null)
+    setSelectedNodeLabel(null)
+    setSelectedSourceId(null)
+  }, [])
 
   // Auth check loading
   if (authed === null) {
@@ -113,11 +124,12 @@ export default function Home() {
 
   return (
     <>
-      {/* View toggle */}
+      {/* Top bar */}
       <ViewToggle view={view} onToggle={setView} />
+      <LogoutButton onLogout={handleLogout} />
 
       {/* Search bar */}
-      <SearchBar />
+      <SearchBar onSourceSelect={setSelectedSourceId} />
 
       {/* Graph (default view) */}
       {view === 'graph' && (
@@ -128,10 +140,18 @@ export default function Home() {
       )}
 
       {/* Stream view */}
-      <StreamView visible={view === 'stream'} />
+      {view === 'stream' && (
+        <StreamView visible={view === 'stream'} onSourceSelect={setSelectedSourceId} />
+      )}
 
       {/* Chat panel */}
       <ChatPanel graphContext={selectedNodeLabel || undefined} />
+
+      {/* Source detail slide-over */}
+      <SourceDetail
+        sourceId={selectedSourceId}
+        onClose={() => setSelectedSourceId(null)}
+      />
     </>
   )
 }
@@ -176,5 +196,42 @@ function ViewToggle({ view, onToggle }: { view: View; onToggle: (v: View) => voi
         </button>
       ))}
     </div>
+  )
+}
+
+// ---------- Logout Button ----------
+
+function LogoutButton({ onLogout }: { onLogout: () => void }) {
+  return (
+    <button
+      onClick={onLogout}
+      style={{
+        position: 'fixed',
+        top: 16,
+        right: 60,
+        zIndex: 50,
+        background: 'rgba(0,0,0,0.6)',
+        border: '1px solid rgba(255,255,255,0.15)',
+        color: 'rgba(255,255,255,0.4)',
+        borderRadius: 8,
+        padding: '8px 14px',
+        cursor: 'pointer',
+        fontSize: 12,
+        fontWeight: 500,
+        backdropFilter: 'blur(8px)',
+        transition: 'all 0.2s',
+        fontFamily: 'inherit',
+      }}
+      onMouseEnter={e => {
+        e.currentTarget.style.color = '#E8795D'
+        e.currentTarget.style.borderColor = 'rgba(232,121,93,0.4)'
+      }}
+      onMouseLeave={e => {
+        e.currentTarget.style.color = 'rgba(255,255,255,0.4)'
+        e.currentTarget.style.borderColor = 'rgba(255,255,255,0.15)'
+      }}
+    >
+      Uit
+    </button>
   )
 }

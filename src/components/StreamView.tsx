@@ -27,7 +27,7 @@ const TYPE_ICONS: Record<string, string> = {
   social: '🌐',
 }
 
-export default function StreamView({ visible }: { visible: boolean }) {
+export default function StreamView({ visible, onSourceSelect }: { visible: boolean; onSourceSelect?: (id: string) => void }) {
   const [sources, setSources] = useState<StreamSource[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -63,7 +63,13 @@ export default function StreamView({ visible }: { visible: boolean }) {
       ) : (
         <div style={gridStyle}>
           {sources.map(source => (
-            <div key={source.id} style={cardStyle}>
+            <div
+              key={source.id}
+              style={cardStyle}
+              onClick={() => onSourceSelect?.(source.id)}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = 'rgba(90,191,191,0.3)'; e.currentTarget.style.cursor = 'pointer' }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)' }}
+            >
               {/* Type + Person badge */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                 <span style={{ fontSize: 16 }}>{TYPE_ICONS[source.source_type] || '📦'}</span>

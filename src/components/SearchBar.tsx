@@ -12,7 +12,7 @@ interface SearchResult {
   score: number
 }
 
-export default function SearchBar() {
+export default function SearchBar({ onSourceSelect }: { onSourceSelect?: (id: string) => void }) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<SearchResult[]>([])
   const [searching, setSearching] = useState(false)
@@ -71,7 +71,17 @@ export default function SearchBar() {
       {showResults && results.length > 0 && (
         <div style={dropdownStyle}>
           {results.map(r => (
-            <div key={r.source_id} style={resultStyle}>
+            <div
+              key={r.source_id}
+              style={resultStyle}
+              onClick={() => {
+                onSourceSelect?.(r.source_id)
+                setShowResults(false)
+                setQuery('')
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(90,191,191,0.08)' }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+            >
               <div style={{ fontSize: 13, fontWeight: 600, color: '#fff' }}>{r.title}</div>
               <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', marginTop: 2 }}>
                 {r.source_type}

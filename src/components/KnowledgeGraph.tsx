@@ -2,9 +2,10 @@
 
 import { useRef, useMemo, useState, useCallback, useEffect } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
-import { Line } from '@react-three/drei'
+import { Line, OrbitControls, Html } from '@react-three/drei'
 import { CatmullRomCurve3, Vector3, MeshStandardMaterial } from 'three'
 import type { Mesh, Group } from 'three'
+import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib'
 
 // ---------- Types ----------
 
@@ -60,26 +61,27 @@ function computeLayout(data: GraphData): NodePosition[] {
     adj.get(e.to_node_id)?.push(e.from_node_id)
   }
 
-  // Initial random positions in a sphere
+  // Initial random positions in a sphere (seeded by index for stability)
   const positions = new Map<string, [number, number, number]>()
-  for (const n of nodes) {
-    const theta = Math.random() * Math.PI * 2
-    const phi = Math.acos(2 * Math.random() - 1)
-    const r = 4 + Math.random() * 4
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i]
+    const theta = (i / nodes.length) * Math.PI * 2 + (i * 0.618) * Math.PI
+    const phi = Math.acos(2 * ((i * 0.618) % 1) - 1)
+    const r = 4 + (i % 3) * 1.5
     positions.set(n.id, [
       r * Math.sin(phi) * Math.cos(theta),
-      (Math.random() - 0.5) * 3,
+      (((i * 7) % 5) - 2) * 0.6,
       r * Math.sin(phi) * Math.sin(theta),
     ])
   }
 
-  // Simple force-directed: 80 iterations
-  const k = 2.5 // ideal distance
-  for (let iter = 0; iter < 80; iter++) {
+  // Force-directed: 100 iterations
+  const k = 2.5
+  for (let iter = 0; iter < 100; iter++) {
     const forces = new Map<string, [number, number, number]>()
     for (const n of nodes) forces.set(n.id, [0, 0, 0])
 
-    // Repulsion (all pairs)
+    // Repulsion
     for (let i = 0; i < nodes.length; i++) {
       for (let j = i + 1; j < nodes.length; j++) {
         const a = positions.get(nodes[i].id)!
@@ -97,7 +99,7 @@ function computeLayout(data: GraphData): NodePosition[] {
       }
     }
 
-    // Attraction (edges)
+    // Attraction
     for (const e of edges) {
       const a = positions.get(e.from_node_id)
       const b = positions.get(e.to_node_id)
@@ -115,19 +117,18 @@ function computeLayout(data: GraphData): NodePosition[] {
     }
 
     // Apply forces with cooling
-    const temp = 0.3 * (1 - iter / 80)
+    const temp = 0.3 * (1 - iter / 100)
     for (const n of nodes) {
       const f = forces.get(n.id)!
       const p = positions.get(n.id)!
       p[0] += Math.max(-temp, Math.min(temp, f[0] * 0.05))
       p[1] += Math.max(-temp, Math.min(temp, f[1] * 0.05))
       p[2] += Math.max(-temp, Math.min(temp, f[2] * 0.05))
-      // Clamp y to a band so graph is somewhat flat
       p[1] = Math.max(-2, Math.min(2, p[1]))
     }
   }
 
-  // Build result with person detection
+  // Build result
   const personNames = new Set(persons.map(p => p.name.toLowerCase()))
   const personColorMap = new Map(persons.map(p => [p.name.toLowerCase(), p.color]))
 
@@ -149,15 +150,16 @@ function computeLayout(data: GraphData): NodePosition[] {
 
 // ---------- Mycelium Edge ----------
 
-function MyceliumEdge({ from, to, color }: { from: Vector3; to: Vector3; color: string }) {
+function MyceliumEdge({ from, to, color, isActive }: {
+  from: Vector3; to: Vector3; color: string; isActive: boolean
+}) {
   const curve = useMemo(() => {
     const mid = new Vector3().addVectors(from, to).multiplyScalar(0.5)
-    // Add organic sag/curve
-    mid.y -= 0.4 + Math.random() * 0.3
+    mid.y -= 0.4 + Math.abs(from.x - to.x) * 0.05
     const offset = new Vector3(
-      (Math.random() - 0.5) * 0.6,
+      (from.z - to.z) * 0.15,
       0,
-      (Math.random() - 0.5) * 0.6
+      (to.x - from.x) * 0.15
     )
     mid.add(offset)
     return new CatmullRomCurve3([from, mid, to])
@@ -169,12 +171,58 @@ function MyceliumEdge({ from, to, color }: { from: Vector3; to: Vector3; color: 
   )
 
   return (
+    <group>
+      {/* Glow layer (only when active) */}
+      {isActive && (
+        <Line
+          points={points}
+          color="#5ABFBF"
+          lineWidth={3}
+          transparent
+          opacity={0.15}
+        />
+      )}
+      {/* Main edge */}
+      <Line
+        points={points}
+        color={isActive ? '#5ABFBF' : color}
+        lineWidth={isActive ? 1.5 : 0.8}
+        transparent
+        opacity={isActive ? 0.5 : 0.2}
+      />
+    </group>
+  )
+}
+
+// ---------- Root Connection (node → person) ----------
+
+function RootConnection({ from, to, color }: { from: Vector3; to: Vector3; color: string }) {
+  const curve = useMemo(() => {
+    const mid1 = new Vector3(
+      from.x * 0.7 + to.x * 0.3,
+      Math.min(from.y, to.y) - 1.2,
+      from.z * 0.7 + to.z * 0.3
+    )
+    const mid2 = new Vector3(
+      from.x * 0.3 + to.x * 0.7,
+      Math.min(from.y, to.y) - 0.8,
+      from.z * 0.3 + to.z * 0.7
+    )
+    return new CatmullRomCurve3([from, mid1, mid2, to])
+  }, [from, to])
+
+  const points = useMemo(
+    () => curve.getPoints(20).map(p => [p.x, p.y, p.z] as [number, number, number]),
+    [curve]
+  )
+
+  return (
     <Line
       points={points}
       color={color}
-      lineWidth={1}
+      lineWidth={0.5}
       transparent
-      opacity={0.25}
+      opacity={0.12}
     />
   )
 }
@@ -192,19 +240,17 @@ function NodeSphere({
   selected: boolean
   hovered: boolean
   onSelect: (id: string) => void
-  onHover: (id: string | null, e?: { clientX: number; clientY: number }) => void
+  onHover: (id: string | null) => void
 }) {
   const meshRef = useRef<Mesh>(null)
   const glowRef = useRef<Mesh>(null)
   const baseRadius = node.isPerson ? 0.5 : 0.2 + Math.min(node.sourceCount * 0.05, 0.3)
   const active = selected || hovered
 
-  useFrame((_, delta) => {
+  useFrame(() => {
     if (!meshRef.current) return
-    // Gentle float
     meshRef.current.position.y =
       node.position.y + Math.sin(Date.now() * 0.001 + node.position.x) * 0.08
-    // Glow pulse
     if (glowRef.current) {
       const scale = active
         ? 1.8 + Math.sin(Date.now() * 0.003) * 0.2
@@ -235,10 +281,7 @@ function NodeSphere({
         onPointerOver={(e) => {
           e.stopPropagation()
           document.body.style.cursor = 'pointer'
-          onHover(node.id, { clientX: e.clientX ?? 0, clientY: e.clientY ?? 0 })
-        }}
-        onPointerMove={(e) => {
-          onHover(node.id, { clientX: e.clientX ?? 0, clientY: e.clientY ?? 0 })
+          onHover(node.id)
         }}
         onPointerOut={() => {
           document.body.style.cursor = 'auto'
@@ -256,11 +299,32 @@ function NodeSphere({
       </mesh>
       {/* Lotus petals for persons */}
       {node.isPerson && <LotusPetals color={node.color} radius={baseRadius} active={active} />}
+      {/* Label */}
+      <Html
+        position={[0, baseRadius + 0.35, 0]}
+        center
+        distanceFactor={10}
+        style={{ pointerEvents: 'none' }}
+      >
+        <div style={{
+          color: active ? '#fff' : node.color,
+          fontSize: node.isPerson ? 13 : 11,
+          fontWeight: node.isPerson ? 700 : 500,
+          fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
+          whiteSpace: 'nowrap',
+          textShadow: '0 0 8px rgba(0,0,0,0.9), 0 0 16px rgba(0,0,0,0.7)',
+          opacity: active ? 1 : 0.7,
+          transition: 'opacity 0.2s, color 0.2s',
+          userSelect: 'none',
+        }}>
+          {node.label}
+        </div>
+      </Html>
     </group>
   )
 }
 
-// ---------- Lotus Petals (persons only) ----------
+// ---------- Lotus Petals ----------
 
 function LotusPetals({ color, radius, active }: { color: string; radius: number; active: boolean }) {
   const groupRef = useRef<Group>(null)
@@ -330,35 +394,46 @@ function WaterPlane() {
   )
 }
 
-// ---------- Camera Controller ----------
+// ---------- Camera Rig (OrbitControls + focus) ----------
 
-function CameraController({ target }: { target: Vector3 | null }) {
+function CameraRig({ target }: { target: Vector3 | null }) {
+  const controlsRef = useRef<OrbitControlsImpl>(null)
+  const targetRef = useRef(new Vector3(0, 0, 0))
   const { camera } = useThree()
-  const currentTarget = useRef(new Vector3(0, 0, 0))
 
   useFrame(() => {
-    const dest = target || new Vector3(0, 0, 0)
-    currentTarget.current.lerp(dest, 0.03)
+    if (!controlsRef.current) return
 
-    if (!target) {
-      // Idle drift
-      const t = Date.now() * 0.0001
-      const driftX = Math.sin(t) * 12
-      const driftZ = Math.cos(t) * 12
-      camera.position.lerp(new Vector3(driftX, 8, driftZ), 0.005)
-    } else {
-      // Focus on selected node
+    const dest = target || new Vector3(0, 0, 0)
+    targetRef.current.lerp(dest, 0.03)
+    controlsRef.current.target.copy(targetRef.current)
+
+    if (target) {
+      // Smoothly move camera toward selected node
       const focusPos = new Vector3(
-        dest.x + 3,
+        dest.x + 4,
         dest.y + 3,
-        dest.z + 3
+        dest.z + 4
       )
-      camera.position.lerp(focusPos, 0.03)
+      camera.position.lerp(focusPos, 0.02)
     }
-    camera.lookAt(currentTarget.current)
+
+    controlsRef.current.update()
   })
 
-  return null
+  return (
+    <OrbitControls
+      ref={controlsRef}
+      enableDamping
+      dampingFactor={0.05}
+      autoRotate={!target}
+      autoRotateSpeed={0.3}
+      minDistance={3}
+      maxDistance={30}
+      maxPolarAngle={Math.PI / 2.1}
+      enablePan={false}
+    />
+  )
 }
 
 // ---------- Scene ----------
@@ -366,9 +441,6 @@ function CameraController({ target }: { target: Vector3 | null }) {
 function Scene({ data, onNodeSelect }: { data: GraphData; onNodeSelect?: (label: string | null) => void }) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [hoveredId, setHoveredId] = useState<string | null>(null)
-  const [tooltipInfo, setTooltipInfo] = useState<{
-    id: string; x: number; y: number
-  } | null>(null)
 
   const layout = useMemo(() => computeLayout(data), [data])
   const posMap = useMemo(() => {
@@ -376,6 +448,36 @@ function Scene({ data, onNodeSelect }: { data: GraphData; onNodeSelect?: (label:
     layout.forEach(n => m.set(n.id, n.position))
     return m
   }, [layout])
+
+  // Find person nodes for root connections
+  const personNodes = useMemo(() => layout.filter(n => n.isPerson), [layout])
+
+  // Build root connections: edges that connect to a person node
+  const rootConnections = useMemo(() => {
+    const connections: Array<{ from: Vector3; to: Vector3; color: string }> = []
+    const personIds = new Set(personNodes.map(p => p.id))
+
+    for (const edge of data.edges) {
+      const fromIsPerson = personIds.has(edge.from_node_id)
+      const toIsPerson = personIds.has(edge.to_node_id)
+      if (!fromIsPerson && !toIsPerson) continue
+
+      const personId = fromIsPerson ? edge.from_node_id : edge.to_node_id
+      const otherId = fromIsPerson ? edge.to_node_id : edge.from_node_id
+      const personPos = posMap.get(personId)
+      const otherPos = posMap.get(otherId)
+      const personNode = personNodes.find(p => p.id === personId)
+
+      if (personPos && otherPos && personNode) {
+        connections.push({
+          from: otherPos,
+          to: personPos,
+          color: personNode.color,
+        })
+      }
+    }
+    return connections
+  }, [data.edges, personNodes, posMap])
 
   const selectedNode = layout.find(n => n.id === selectedId)
   const cameraTarget = selectedNode ? selectedNode.position : null
@@ -389,44 +491,24 @@ function Scene({ data, onNodeSelect }: { data: GraphData; onNodeSelect?: (label:
     })
   }, [layout, onNodeSelect])
 
-  const handleHover = useCallback((id: string | null, e?: { clientX: number; clientY: number }) => {
+  const handleHover = useCallback((id: string | null) => {
     setHoveredId(id)
-    if (id && e) {
-      setTooltipInfo({ id, x: e.clientX, y: e.clientY })
-    } else {
-      setTooltipInfo(null)
-    }
   }, [])
-
-  // Propagate tooltip to DOM
-  useEffect(() => {
-    const el = document.getElementById('node-tooltip')
-    if (!el) return
-    if (tooltipInfo) {
-      const node = layout.find(n => n.id === tooltipInfo.id)
-      if (node) {
-        el.style.display = 'block'
-        el.style.left = `${tooltipInfo.x + 14}px`
-        el.style.top = `${tooltipInfo.y - 10}px`
-        el.innerHTML = `
-          <div class="label" style="color:${node.color}">${node.label}</div>
-          <div class="meta">${node.sourceCount} bron${node.sourceCount !== 1 ? 'nen' : ''}${node.isPerson ? ' · persoon' : ''}</div>
-        `
-      }
-    } else {
-      el.style.display = 'none'
-    }
-  }, [tooltipInfo, layout])
 
   return (
     <>
-      <CameraController target={cameraTarget} />
+      <CameraRig target={cameraTarget} />
       <ambientLight intensity={0.15} />
       <pointLight position={[10, 15, 10]} intensity={0.6} color="#5ABFBF" />
       <pointLight position={[-10, 10, -10]} intensity={0.4} color="#E8795D" />
       <fog attach="fog" args={['#000000', 15, 40]} />
 
       <WaterPlane />
+
+      {/* Root connections (node → person lotus) */}
+      {rootConnections.map((rc, i) => (
+        <RootConnection key={`root-${i}`} from={rc.from} to={rc.to} color={rc.color} />
+      ))}
 
       {/* Mycelium edges */}
       {data.edges.map(edge => {
@@ -443,7 +525,8 @@ function Scene({ data, onNodeSelect }: { data: GraphData; onNodeSelect?: (label:
             key={edge.id}
             from={from}
             to={to}
-            color={isActive ? '#5ABFBF' : '#1a3a3a'}
+            color="#1a3a3a"
+            isActive={isActive}
           />
         )
       })}
@@ -484,13 +567,9 @@ export default function KnowledgeGraph({ data, onNodeSelect }: { data: GraphData
       <button className="fullscreen-btn" onClick={toggleFullscreen}>
         {isFullscreen ? '⊡' : '⊞'}
       </button>
-      <div id="node-tooltip" className="node-tooltip" style={{ display: 'none' }} />
       <Canvas
         camera={{ position: [10, 8, 10], fov: 50, near: 0.1, far: 100 }}
         style={{ width: '100vw', height: '100vh', background: '#000' }}
-        onPointerMissed={() => {
-          // Deselect when clicking empty space
-        }}
       >
         <Scene data={data} onNodeSelect={onNodeSelect} />
       </Canvas>

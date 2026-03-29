@@ -132,8 +132,50 @@ export default function ChatPanel({ graphContext }: { graphContext?: string }) {
       {/* Messages */}
       <div style={messagesStyle}>
         {messages.length === 0 && (
-          <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: 13, textAlign: 'center', padding: 40 }}>
-            Stel een vraag over de kennisbank...
+          <div style={{ padding: '30px 10px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
+            <div style={{ color: 'rgba(255,255,255,0.25)', fontSize: 13, textAlign: 'center' }}>
+              Stel een vraag over de kennisbank...
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'center' }}>
+              {(graphContext
+                ? [
+                    `Wat is ${graphContext}?`,
+                    `Hoe past ${graphContext} in het grotere geheel?`,
+                    `Welke bronnen gaan over ${graphContext}?`,
+                  ]
+                : [
+                    'Waar gaat Re\u2011Creation over?',
+                    'Wat speelt er rond Florida?',
+                    'Wat zijn de laatste inzichten?',
+                  ]
+              ).map(suggestion => (
+                <button
+                  key={suggestion}
+                  onClick={() => { setInput(suggestion) }}
+                  style={{
+                    padding: '6px 12px',
+                    borderRadius: 16,
+                    border: '1px solid rgba(90,191,191,0.25)',
+                    background: 'rgba(90,191,191,0.06)',
+                    color: 'rgba(90,191,191,0.7)',
+                    fontSize: 12,
+                    cursor: 'pointer',
+                    fontFamily: 'inherit',
+                    transition: 'all 0.2s',
+                  }}
+                  onMouseEnter={e => {
+                    e.currentTarget.style.background = 'rgba(90,191,191,0.15)'
+                    e.currentTarget.style.color = '#5ABFBF'
+                  }}
+                  onMouseLeave={e => {
+                    e.currentTarget.style.background = 'rgba(90,191,191,0.06)'
+                    e.currentTarget.style.color = 'rgba(90,191,191,0.7)'
+                  }}
+                >
+                  {suggestion}
+                </button>
+              ))}
+            </div>
           </div>
         )}
         {messages.map((m, i) => (
