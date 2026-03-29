@@ -321,7 +321,7 @@ export default function KnowledgeGraph({ data, centerId, path, fullscreen, onNod
       positions[n.id] = { x: Math.cos(angle) * dist, y: height, z: Math.sin(angle) * dist, vx: 0, vy: 0, vz: 0, height }
     })
     personNodes.forEach((n, i) => {
-      positions[n.id] = { x: i === 0 ? -10 : 10, y: floorY + 2.5, z: 0, vx: 0, vy: 0, vz: 0, height: 0 }
+      positions[n.id] = { x: i === 0 ? -10 : 10, y: floorY + 0.1, z: 0, vx: 0, vy: 0, vz: 0, height: 0 }
     })
 
     // Force simulation
@@ -419,19 +419,19 @@ export default function KnowledgeGraph({ data, centerId, path, fullscreen, onNod
         )
         glowMesh.rotation.x = -Math.PI / 2
         glowMesh.position.set(p.x, p.y - 0.1, p.z)
-        glowMesh.userData = { isGlow: true, parentId: n.id, targetOpacity: 0.1 }
+        glowMesh.userData = { isGlow: true, parentId: n.id, targetOpacity: 0.28 }
         st.scene!.add(glowMesh); st.labels.push(glowMesh)
 
         // Water ripples
-        for (let ring = 0; ring < 3; ring++) {
-          const ringRadius = n.r * (2.5 + ring * 1.6)
+        for (let ring = 0; ring < 4; ring++) {
+          const ringRadius = n.r * (2.2 + ring * 2.0)
           const ringMesh = new THREE.Mesh(
-            new THREE.RingGeometry(ringRadius - 0.05, ringRadius + 0.05, 64),
+            new THREE.RingGeometry(ringRadius - 0.08, ringRadius + 0.08, 64),
             new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0, side: THREE.DoubleSide })
           )
           ringMesh.rotation.x = -Math.PI / 2
-          ringMesh.position.set(p.x, floorY + 0.12, p.z)
-          ringMesh.userData = { isRipple: true, parentId: n.id, ringIndex: ring, baseRadius: ringRadius, targetOpacity: 0.2 - ring * 0.05, floorY: floorY + 0.12 }
+          ringMesh.position.set(p.x, floorY + 0.14, p.z)
+          ringMesh.userData = { isRipple: true, parentId: n.id, ringIndex: ring, baseRadius: ringRadius, targetOpacity: 0.65 - ring * 0.12, floorY: floorY + 0.14 }
           st.scene!.add(ringMesh); st.labels.push(ringMesh)
         }
       }
@@ -663,10 +663,13 @@ export default function KnowledgeGraph({ data, centerId, path, fullscreen, onNod
         const parent = st.nodes.find(n => n.userData.id === ud.parentId)
         if (parent && mat) {
           obj.position.x = parent.position.x; obj.position.z = parent.position.z; obj.position.y = ud.floorY
-          const expand = 1 + Math.sin(time * 0.35 - ud.ringIndex * 0.8) * 0.12
+          // Continuous outward expansion: each ring offset in phase, resets when it reaches max size
+          const phase = (time * 0.28 - ud.ringIndex * 0.55) % 1
+          const expand = 1 + phase * 0.5
           obj.scale.set(expand, expand, 1)
-          const fade = 1 + Math.sin(time * 0.5 - ud.ringIndex * 1.2) * 0.3
-          mat.opacity += (ud.targetOpacity * fade - mat.opacity) * 0.03
+          // Fade in fast, fade out as it expands
+          const fade = phase < 0.3 ? phase / 0.3 : 1 - (phase - 0.3) / 0.7
+          mat.opacity += (ud.targetOpacity * Math.max(0, fade) - mat.opacity) * 0.06
         }
         continue
       }

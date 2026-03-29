@@ -7,7 +7,23 @@
       "Bash(npx next:*)",
       "Bash(git init:*)",
       "Bash(git branch:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(gh auth:*)",
+      "Bash(git remote:*)",
+      "Bash(git push:*)",
+      "Bash(git pull:*)",
+      "Bash(git stash:*)",
+      "WebFetch(domain:wubbo.vercel.app)",
+      "Bash(git ls-tree:*)",
+      "Bash(wc -l src/app/page.tsx src/components/*.tsx)",
+      "Bash(npm run:*)",
+      "Bash(curl -s -X POST https://wubbo.vercel.app/api/ingest -H \"Authorization: Bearer wubbo-tothemoon-2026\" -H \"Content-Type: application/json\" -d '{\"\"title\"\":\"\"Test ingest\"\",\"\"content\"\":\"\"Dit is een test van de ingest pipeline. Wubbo is de kennisbank van Rutger en Annelie, gebouwd op Schiermonnikoog.\"\",\"\"source_type\"\":\"\"note\"\",\"\"person_name\"\":\"\"Rutger\"\"}')",
+      "Bash(python3 -c \":*)",
+      "Bash(python3 -m json.tool)",
+      "Bash(/usr/local/bin/npm run:*)",
+      "Bash(/Users/thewhiterabbit/.nvm/versions/node/v22.11.0/bin/npm run:*)",
+      "Bash(node_modules/.bin/next build:*)"
     ]
   }
 }
