@@ -33,6 +33,52 @@ async function fetchMetadata(videoId: string): Promise<{ title: string; channel:
   }
 }
 
+function decodeEntities(s: string): string {
+  return s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&apos;/g, "'")
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)));
+}
+
+function parseTranscriptXml(xml: string): string {
+  const lines: string[] = [];
+
+  // Format 1: <p t="..." d="..."><s>word</s><s>word</s></p>  (newer timedtext format=3)
+  const pRegex = /<p\s+t="(\d+)"[^>]*>([\s\S]*?)<\/p>/g;
+  let pm;
+  while ((pm = pRegex.exec(xml)) !== null) {
+    const inner = pm[2];
+    // Extract <s> segments
+    const words: string[] = [];
+    const sRegex = /<s[^>]*>([^<]*)<\/s>/g;
+    let sm;
+    while ((sm = sRegex.exec(inner)) !== null) {
+      const w = decodeEntities(sm[1]).trim();
+      if (w) words.push(w);
+    }
+    if (words.length > 0) {
+      lines.push(words.join(' '));
+    } else {
+      // No <s> tags, use raw text content
+      const raw = inner.replace(/<[^>]+>/g, '');
+      const clean = decodeEntities(raw).replace(/\n/g, ' ').trim();
+      if (clean) lines.push(clean);
+    }
+  }
+
+  // Format 2: <text start="..." dur="...">content</text>  (older format)
+  if (lines.length === 0) {
+    const tRegex = /<text[^>]*>([\s\S]*?)<\/text>/g;
+    let tm;
+    while ((tm = tRegex.exec(xml)) !== null) {
+      const clean = decodeEntities(tm[1]).replace(/\n/g, ' ').trim();
+      if (clean) lines.push(clean);
+    }
+  }
+
+  return lines.join(' ');
+}
+
 async function fetchTranscript(videoId: string): Promise<{ text: string; error?: string }> {
   // youtube-transcript uses innertube API (Android client) which bypasses session-bound URLs
   const attempts = [
@@ -80,16 +126,8 @@ async function fetchTranscript(videoId: string): Promise<{ text: string; error?:
           });
           if (xmlRes.ok) {
             const xml = await xmlRes.text();
-            const lines: string[] = [];
-            const regex = /<text[^>]*>([\s\S]*?)<\/text>/g;
-            let m;
-            while ((m = regex.exec(xml)) !== null) {
-              const text = m[1]
-                .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-                .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/\n/g, ' ').trim();
-              if (text) lines.push(text);
-            }
-            if (lines.length > 0) return { text: lines.join(' ') };
+            const text = parseTranscriptXml(xml);
+            if (text) return { text };
           }
         }
       }

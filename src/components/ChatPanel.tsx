@@ -26,6 +26,29 @@ function isYouTubeUrl(text: string): boolean {
   return /(?:youtube\.com\/watch\?v=|youtu\.be\/)[\w-]+/.test(text.trim())
 }
 
+function parseTranscriptXml(xml: string): string {
+  const de = (s: string) => s.replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&apos;/g,"'")
+  const lines: string[] = []
+  // Format 1: <p><s>word</s></p>
+  const pRe = /<p\s+t="\d+"[^>]*>([\s\S]*?)<\/p>/g
+  let pm
+  while ((pm = pRe.exec(xml)) !== null) {
+    const words: string[] = []
+    const sRe = /<s[^>]*>([^<]*)<\/s>/g
+    let sm
+    while ((sm = sRe.exec(pm[1])) !== null) { const w = de(sm[1]).trim(); if (w) words.push(w) }
+    if (words.length > 0) lines.push(words.join(' '))
+    else { const raw = de(pm[1].replace(/<[^>]+>/g, '')).replace(/\n/g, ' ').trim(); if (raw) lines.push(raw) }
+  }
+  // Format 2: <text>content</text>
+  if (lines.length === 0) {
+    const tRe = /<text[^>]*>([\s\S]*?)<\/text>/g
+    let tm
+    while ((tm = tRe.exec(xml)) !== null) { const c = de(tm[1]).replace(/\n/g, ' ').trim(); if (c) lines.push(c) }
+  }
+  return lines.join(' ')
+}
+
 // ---------- Component ----------
 export default function ChatPanel({
   graphContext,
@@ -92,15 +115,7 @@ export default function ChatPanel({
       const xmlRes = await fetch(track.baseUrl)
       if (!xmlRes.ok) return ''
       const xml = await xmlRes.text()
-      const lines: string[] = []
-      const regex = /<text[^>]*>([\s\S]*?)<\/text>/g
-      let m
-      while ((m = regex.exec(xml)) !== null) {
-        const t = m[1].replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-          .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/\n/g, ' ').trim()
-        if (t) lines.push(t)
-      }
-      return lines.join(' ')
+      return parseTranscriptXml(xml)
     } catch (e) {
       console.log('Client-side transcript failed:', e)
       return ''
