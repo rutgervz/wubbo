@@ -22,12 +22,21 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'content too short (min 10 chars)' }, { status: 400 });
     }
 
+    // Map person_name → owner_id (Supabase auth user UUIDs)
+    const PERSON_OWNER_MAP: Record<string, string> = {
+      'Rutger': process.env.RUTGER_USER_ID || '12a4211a-91fb-4a72-8cb0-74f92692fced',
+      'Annelie': process.env.ANNELIE_USER_ID || process.env.RUTGER_USER_ID || '12a4211a-91fb-4a72-8cb0-74f92692fced',
+      'Samen': process.env.RUTGER_USER_ID || '12a4211a-91fb-4a72-8cb0-74f92692fced',
+    };
+    const personName = body.person_name || body.person || body.who || 'Rutger';
+    const ownerId = body.owner_id || PERSON_OWNER_MAP[personName] || PERSON_OWNER_MAP['Rutger'];
+
     const input: IngestInput = {
       title: body.title,
       content: body.content,
       sourceType: body.source_type || 'note',
-      personName: body.person || body.who || 'Samen',
-      ownerId: body.owner_id,
+      personName,
+      ownerId,
       originalUrl: body.url,
       externalId: body.external_id,
       ingestedVia: body.ingested_via || 'webhook',

@@ -731,9 +731,20 @@ export default function KnowledgeGraph({ data, centerId, path, fullscreen, onNod
 
     if (activeNode) {
       hovConns.add(activeNode)
-      for (const line of st.edges) {
-        if (line.userData.aId === activeNode) hovConns.add(line.userData.bId)
-        if (line.userData.bId === activeNode) hovConns.add(line.userData.aId)
+      // Check if active node is a lotus — all theme nodes connect to it via roots
+      const activeMesh = st.nodes.find(n => n.userData.id === activeNode)
+      if (activeMesh?.userData.isLotus) {
+        // All nodes visible when a person is selected
+        for (const mesh of st.nodes) hovConns.add(mesh.userData.id as string)
+      } else {
+        for (const line of st.edges) {
+          if (line.userData.aId === activeNode) hovConns.add(line.userData.bId)
+          if (line.userData.bId === activeNode) hovConns.add(line.userData.aId)
+        }
+        // Also add lotus nodes (always connected via roots)
+        for (const mesh of st.nodes) {
+          if (mesh.userData.isLotus) hovConns.add(mesh.userData.id as string)
+        }
       }
       for (const mesh of st.nodes) {
         const ud = mesh.userData
