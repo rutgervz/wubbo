@@ -1,8 +1,9 @@
 // YouTube ingestion pipeline
-// Uses nodejs runtime (youtube-transcript uses fetch internally, but safer with Node)
+// Uses innertube API (via youtube-transcript) for reliable transcript access
 export const runtime = 'nodejs';
 
 import { ingest } from '@/lib/ingestion';
+import { YoutubeTranscript } from 'youtube-transcript';
 
 function extractVideoId(url: string): string | null {
   const patterns = [
@@ -18,7 +19,7 @@ function extractVideoId(url: string): string | null {
   return null;
 }
 
-async function fetchMetadata(videoId: string): Promise<{ title: string; channel: string; thumbnail: string; duration?: string }> {
+async function fetchMetadata(videoId: string): Promise<{ title: string; channel: string; thumbnail: string }> {
   try {
     const res = await fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`);
     const data = await res.json();
@@ -34,59 +35,20 @@ async function fetchMetadata(videoId: string): Promise<{ title: string; channel:
 
 async function fetchTranscript(videoId: string): Promise<string> {
   try {
-    // Fetch video page to find caption tracks
-    const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-        'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
-      },
-    });
-    const html = await pageRes.text();
-
-    // Extract ytInitialPlayerResponse
-    // Use indexOf + substring instead of /s flag (es2018 not guaranteed in tsconfig)
-    const marker = 'ytInitialPlayerResponse = ';
-    const start = html.indexOf(marker);
-    if (start === -1) return '';
-    const jsonStart = start + marker.length;
-    // Find matching closing brace
-    let depth = 0, end = -1;
-    for (let j = jsonStart; j < Math.min(jsonStart + 200000, html.length); j++) {
-      if (html[j] === '{') depth++;
-      else if (html[j] === '}') { depth--; if (depth === 0) { end = j + 1; break; } }
-    }
-    const match = end > jsonStart ? [null, html.slice(jsonStart, end)] : null;
-    if (!match) return '';
-
-    let playerData: any;
-    try { playerData = JSON.parse(match[1] as string); } catch { return ''; }
-
-    const tracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-    if (!tracks || tracks.length === 0) return '';
-
-    // Prefer Dutch (nl), fall back to English (en), then first available
-    const track =
-      tracks.find((t: any) => t.languageCode === 'nl') ||
-      tracks.find((t: any) => t.languageCode === 'en') ||
-      tracks[0];
-
-    if (!track?.baseUrl) return '';
-
-    // Fetch XML transcript
-    const xmlRes = await fetch(track.baseUrl + '&fmt=json3');
-    if (!xmlRes.ok) return '';
-
-    const data = await xmlRes.json();
-    const events = data?.events || [];
-    const lines: string[] = [];
-
-    for (const ev of events) {
-      if (!ev.segs) continue;
-      const text = ev.segs.map((s: any) => s.utf8 || '').join('').replace(/\n/g, ' ').trim();
-      if (text) lines.push(text);
+    // Try Dutch first, then English, then any language
+    let segments;
+    try {
+      segments = await YoutubeTranscript.fetchTranscript(videoId, { lang: 'nl' });
+    } catch {
+      try {
+        segments = await YoutubeTranscript.fetchTranscript(videoId, { lang: 'en' });
+      } catch {
+        segments = await YoutubeTranscript.fetchTranscript(videoId);
+      }
     }
 
-    return lines.join(' ');
+    if (!segments || segments.length === 0) return '';
+    return segments.map((s: { text: string }) => s.text).join(' ');
   } catch (e) {
     console.error('Transcript fetch error:', e);
     return '';
