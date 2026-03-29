@@ -55,21 +55,86 @@ export default function ChatPanel({
     }
   }, [input])
 
+  // Fetch transcript CLIENT-SIDE (browser is not IP-blocked by YouTube)
+  const fetchTranscriptClientSide = useCallback(async (videoId: string): Promise<string> => {
+    try {
+      // Use innertube API from the browser — no CORS issues since it's YouTube→YouTube
+      // We go through our own proxy to avoid CORS: but actually that defeats the purpose.
+      // Instead, use a public transcript API or parse from the YouTube page via a CORS proxy.
+
+      // Approach: fetch via YouTube's timedtext endpoint through our server as a simple proxy
+      const res = await fetch(`/api/youtube/transcript?v=${videoId}`)
+      if (res.ok) {
+        const data = await res.json()
+        if (data.transcript) return data.transcript
+      }
+    } catch {}
+
+    // Fallback: fetch the innertube API directly from the browser
+    try {
+      const res = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          context: { client: { clientName: 'WEB', clientVersion: '2.20240313.05.00' } },
+          videoId,
+        }),
+      })
+      if (!res.ok) return ''
+      const data = await res.json()
+      const tracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks
+      if (!tracks || tracks.length === 0) return ''
+      const track = tracks.find((t: any) => t.languageCode === 'nl')
+        || tracks.find((t: any) => t.languageCode === 'en')
+        || tracks[0]
+      if (!track?.baseUrl) return ''
+
+      const xmlRes = await fetch(track.baseUrl)
+      if (!xmlRes.ok) return ''
+      const xml = await xmlRes.text()
+      const lines: string[] = []
+      const regex = /<text[^>]*>([\s\S]*?)<\/text>/g
+      let m
+      while ((m = regex.exec(xml)) !== null) {
+        const t = m[1].replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/\n/g, ' ').trim()
+        if (t) lines.push(t)
+      }
+      return lines.join(' ')
+    } catch (e) {
+      console.log('Client-side transcript failed:', e)
+      return ''
+    }
+  }, [])
+
   const handleYouTube = useCallback(async (url: string) => {
     const userMsg: Message = { role: 'user', content: url }
-    const loadingMsg: Message = { role: 'assistant', content: '' }
+    const loadingMsg: Message = { role: 'assistant', content: 'Video ophalen...' }
     setMessages(prev => [...prev, userMsg, loadingMsg])
     setStreaming(true)
 
     try {
+      // Extract video ID
+      const vidMatch = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w-]{11})/)
+      const videoId = vidMatch?.[1] || ''
+
+      // Try to fetch transcript from the browser first
+      let transcript = ''
+      if (videoId) {
+        setMessages(prev => { const u = [...prev]; u[u.length - 1].content = 'Transcript ophalen...'; return [...u] })
+        transcript = await fetchTranscriptClientSide(videoId)
+      }
+
+      // Send URL + transcript to server for ingestion
       const res = await fetch('/api/youtube', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, person_name: personName }),
+        body: JSON.stringify({ url, person_name: personName, client_transcript: transcript || undefined }),
       })
       const data = await res.json()
+      const hasTranscript = data.has_transcript || (transcript.length > 100)
       const text = data.success
-        ? `Video opgeslagen ✓\n\n**${data.title}**\nKanaal: ${data.channel}\n${data.has_transcript ? `Transcript: ${data.chunks_created} chunks` : 'Geen transcript beschikbaar'}\n\nVraag maar wat je wilt weten over deze video.`
+        ? `Video opgeslagen ✓\n\n**${data.title}**\nKanaal: ${data.channel}\n${hasTranscript ? `Transcript: ${data.chunks_created} chunks` : 'Geen transcript beschikbaar'}\n\nVraag maar wat je wilt weten over deze video.`
         : `Kon video niet verwerken: ${data.error || 'onbekende fout'}`
       setMessages(prev => {
         const u = [...prev]
@@ -84,7 +149,7 @@ export default function ChatPanel({
       })
     }
     setStreaming(false)
-  }, [personName])
+  }, [personName, fetchTranscriptClientSide])
 
   const sendMessage = useCallback(async (overrideText?: string) => {
     const text = (overrideText ?? input).trim()

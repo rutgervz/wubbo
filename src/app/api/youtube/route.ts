@@ -103,18 +103,23 @@ async function fetchTranscript(videoId: string): Promise<{ text: string; error?:
 
 export async function POST(request: Request) {
   try {
-    const { url, person_name } = await request.json();
+    const body = await request.json();
+    const { url, person_name, client_transcript } = body;
     if (!url) return Response.json({ error: 'url is verplicht' }, { status: 400 });
 
     const videoId = extractVideoId(url);
     if (!videoId) return Response.json({ error: 'Ongeldige YouTube URL' }, { status: 400 });
 
-    // Fetch metadata and transcript in parallel
-    const [meta, transcriptResult] = await Promise.all([
-      fetchMetadata(videoId),
-      fetchTranscript(videoId),
-    ]);
-    const transcript = transcriptResult.text;
+    // Fetch metadata; use client-provided transcript if available, otherwise try server-side
+    const meta = await fetchMetadata(videoId);
+    let transcript = '';
+    if (typeof client_transcript === 'string' && client_transcript.length > 50) {
+      transcript = client_transcript;
+      console.log('Using client-provided transcript:', transcript.length, 'chars');
+    } else {
+      const transcriptResult = await fetchTranscript(videoId);
+      transcript = transcriptResult.text;
+    }
 
     // Build content
     const content = [
@@ -152,7 +157,7 @@ export async function POST(request: Request) {
       thumbnail: meta.thumbnail,
       video_id: videoId,
       has_transcript: transcript.length > 100,
-      transcript_error: transcriptResult.error || null,
+      transcript_error: transcript ? null : 'Transcript niet beschikbaar',
       source_id: result.sourceId,
       chunks_created: result.chunksCreated,
       status: result.status,
