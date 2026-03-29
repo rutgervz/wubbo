@@ -18,7 +18,8 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "three": "^0.170.0",
-    "youtube-transcript": "^1.3.0"
+    "youtube-transcript": "^1.3.0",
+    "youtube-transcript-plus": "^2.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

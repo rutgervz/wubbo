@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "zetmop-web",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "export PATH=/opt/homebrew/bin:$PATH && cd /Users/thewhiterabbit/zetmop && npx expo start --web --port 8082"],
+      "port": 8082
+    }
+  ]
+}
