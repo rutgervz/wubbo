@@ -26,27 +26,70 @@ function isYouTubeUrl(text: string): boolean {
   return /(?:youtube\.com\/watch\?v=|youtu\.be\/)[\w-]+/.test(text.trim())
 }
 
-function parseTranscriptXml(xml: string): string {
-  const de = (s: string) => s.replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&apos;/g,"'")
-  const lines: string[] = []
-  // Format 1: <p><s>word</s></p>
-  const pRe = /<p\s+t="\d+"[^>]*>([\s\S]*?)<\/p>/g
-  let pm
-  while ((pm = pRe.exec(xml)) !== null) {
-    const words: string[] = []
-    const sRe = /<s[^>]*>([^<]*)<\/s>/g
-    let sm
-    while ((sm = sRe.exec(pm[1])) !== null) { const w = de(sm[1]).trim(); if (w) words.push(w) }
-    if (words.length > 0) lines.push(words.join(' '))
-    else { const raw = de(pm[1].replace(/<[^>]+>/g, '')).replace(/\n/g, ' ').trim(); if (raw) lines.push(raw) }
-  }
-  // Format 2: <text>content</text>
-  if (lines.length === 0) {
-    const tRe = /<text[^>]*>([\s\S]*?)<\/text>/g
-    let tm
-    while ((tm = tRe.exec(xml)) !== null) { const c = de(tm[1]).replace(/\n/g, ' ').trim(); if (c) lines.push(c) }
-  }
-  return lines.join(' ')
+function extractVideoId(url: string): string {
+  const m = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w-]{11})/)
+  return m?.[1] || ''
+}
+
+// ---------- Transcript Paste Modal ----------
+function TranscriptPasteModal({ videoTitle, onSubmit, onSkip }: {
+  videoTitle: string
+  onSubmit: (text: string) => void
+  onSkip: () => void
+}) {
+  const [text, setText] = useState('')
+  const textRef = useRef<HTMLTextAreaElement>(null)
+
+  useEffect(() => { textRef.current?.focus() }, [])
+
+  return (
+    <div style={{ background: 'rgba(255,255,255,0.04)', border: `1px solid rgba(232,121,93,0.3)`, borderRadius: 14, padding: '16px 18px', marginTop: 8 }}>
+      <div style={{ fontSize: 12, color: C.coral, fontWeight: 600, marginBottom: 8 }}>
+        Transcript niet beschikbaar via server
+      </div>
+      <div style={{ fontSize: 12, color: C.inkSoft, lineHeight: 1.55, marginBottom: 12 }}>
+        YouTube blokkeert transcripts vanuit cloud servers. Je kunt het handmatig toevoegen:
+      </div>
+      <ol style={{ fontSize: 11, color: C.inkMu, lineHeight: 1.7, margin: '0 0 12px', paddingLeft: 18, fontFamily: F.body }}>
+        <li>Open de video op YouTube</li>
+        <li>Klik op <strong style={{ color: C.inkSoft }}>···</strong> (meer) onder de video</li>
+        <li>Kies <strong style={{ color: C.inkSoft }}>Transcript tonen</strong></li>
+        <li>Selecteer alles (Ctrl/Cmd+A) en kopieer</li>
+        <li>Plak hieronder</li>
+      </ol>
+      <textarea
+        ref={textRef}
+        value={text}
+        onChange={e => setText(e.target.value)}
+        placeholder="Plak het transcript hier..."
+        style={{
+          width: '100%', minHeight: 80, maxHeight: 180, padding: '10px 12px',
+          background: 'rgba(0,0,0,0.3)', border: `1px solid ${C.line}`, borderRadius: 8,
+          color: C.ink, fontSize: 12, fontFamily: F.body, resize: 'vertical', outline: 'none',
+          boxSizing: 'border-box',
+        }}
+      />
+      <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+        <button
+          onClick={() => { if (text.trim().length > 20) onSubmit(text.trim()) }}
+          disabled={text.trim().length < 20}
+          style={{
+            flex: 1, padding: '8px 0', borderRadius: 8, border: 'none', fontSize: 12, fontWeight: 600, cursor: text.trim().length > 20 ? 'pointer' : 'default',
+            background: text.trim().length > 20 ? C.sea : 'rgba(90,191,191,0.15)',
+            color: text.trim().length > 20 ? '#0A0A08' : 'rgba(90,191,191,0.4)',
+            fontFamily: F.body, transition: 'all 0.2s',
+          }}
+        >Opslaan met transcript</button>
+        <button
+          onClick={onSkip}
+          style={{
+            padding: '8px 16px', borderRadius: 8, border: `1px solid ${C.line}`, background: 'transparent',
+            color: C.inkMu, fontSize: 12, cursor: 'pointer', fontFamily: F.body,
+          }}
+        >Overslaan</button>
+      </div>
+    </div>
+  )
 }
 
 // ---------- Component ----------
@@ -63,6 +106,7 @@ export default function ChatPanel({
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [savedIdx, setSavedIdx] = useState<Set<number>>(new Set())
+  const [pendingYT, setPendingYT] = useState<{ url: string; title: string; videoId: string } | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
@@ -78,93 +122,94 @@ export default function ChatPanel({
     }
   }, [input])
 
-  // Fetch transcript CLIENT-SIDE (browser is not IP-blocked by YouTube)
-  const fetchTranscriptClientSide = useCallback(async (videoId: string): Promise<string> => {
-    try {
-      // Use innertube API from the browser — no CORS issues since it's YouTube→YouTube
-      // We go through our own proxy to avoid CORS: but actually that defeats the purpose.
-      // Instead, use a public transcript API or parse from the YouTube page via a CORS proxy.
-
-      // Approach: fetch via YouTube's timedtext endpoint through our server as a simple proxy
-      const res = await fetch(`/api/youtube/transcript?v=${videoId}`)
-      if (res.ok) {
-        const data = await res.json()
-        if (data.transcript) return data.transcript
-      }
-    } catch {}
-
-    // Fallback: fetch the innertube API directly from the browser
-    try {
-      const res = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          context: { client: { clientName: 'WEB', clientVersion: '2.20240313.05.00' } },
-          videoId,
-        }),
-      })
-      if (!res.ok) return ''
-      const data = await res.json()
-      const tracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks
-      if (!tracks || tracks.length === 0) return ''
-      const track = tracks.find((t: any) => t.languageCode === 'nl')
-        || tracks.find((t: any) => t.languageCode === 'en')
-        || tracks[0]
-      if (!track?.baseUrl) return ''
-
-      const xmlRes = await fetch(track.baseUrl)
-      if (!xmlRes.ok) return ''
-      const xml = await xmlRes.text()
-      return parseTranscriptXml(xml)
-    } catch (e) {
-      console.log('Client-side transcript failed:', e)
-      return ''
-    }
+  const updateLastMessage = useCallback((content: string) => {
+    setMessages(prev => {
+      const u = [...prev]
+      if (u.length > 0) u[u.length - 1] = { ...u[u.length - 1], content }
+      return u
+    })
   }, [])
 
   const handleYouTube = useCallback(async (url: string) => {
+    const videoId = extractVideoId(url)
     const userMsg: Message = { role: 'user', content: url }
-    const loadingMsg: Message = { role: 'assistant', content: 'Video ophalen...' }
+    const loadingMsg: Message = { role: 'assistant', content: '▶ Video ophalen...' }
     setMessages(prev => [...prev, userMsg, loadingMsg])
     setStreaming(true)
 
     try {
-      // Extract video ID
-      const vidMatch = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w-]{11})/)
-      const videoId = vidMatch?.[1] || ''
-
-      // Try to fetch transcript from the browser first
-      let transcript = ''
-      if (videoId) {
-        setMessages(prev => { const u = [...prev]; u[u.length - 1].content = 'Transcript ophalen...'; return [...u] })
-        transcript = await fetchTranscriptClientSide(videoId)
-      }
-
-      // Send URL + transcript to server for ingestion
+      // Step 1: Send to server (tries IOS + ANDROID innertube)
+      updateLastMessage('▶ Video verwerken — transcript ophalen via server...')
       const res = await fetch('/api/youtube', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, person_name: personName, client_transcript: transcript || undefined }),
+        body: JSON.stringify({ url, person_name: personName }),
       })
       const data = await res.json()
-      const hasTranscript = data.has_transcript || (transcript.length > 100)
-      const text = data.success
-        ? `Video opgeslagen ✓\n\n**${data.title}**\nKanaal: ${data.channel}\n${hasTranscript ? `Transcript: ${data.chunks_created} chunks` : 'Geen transcript beschikbaar'}\n\nVraag maar wat je wilt weten over deze video.`
-        : `Kon video niet verwerken: ${data.error || 'onbekende fout'}`
-      setMessages(prev => {
-        const u = [...prev]
-        u[u.length - 1].content = text
-        return u
+
+      if (!data.success) {
+        updateLastMessage(`Kon video niet verwerken: ${data.error || 'onbekende fout'}`)
+        setStreaming(false)
+        return
+      }
+
+      if (data.has_transcript) {
+        // Server got the transcript — done!
+        updateLastMessage(
+          `**${data.title}**\nKanaal: ${data.channel}\n\n✓ Transcript opgeslagen (${data.chunks_created} chunks, via ${data.transcript_method || 'server'})\n\nVraag maar wat je wilt weten over deze video.`
+        )
+        setStreaming(false)
+        return
+      }
+
+      // Step 2: Server failed to get transcript — show paste UI
+      updateLastMessage(
+        `**${data.title}**\nKanaal: ${data.channel}\n\n⚠ Video opgeslagen maar zonder transcript.\n${data.transcript_error ? `Reden: ${data.transcript_error}` : ''}`
+      )
+      setPendingYT({ url, title: data.title, videoId })
+      setStreaming(false)
+
+    } catch (e) {
+      updateLastMessage('Fout bij ophalen video. Probeer opnieuw.')
+      setStreaming(false)
+    }
+  }, [personName, updateLastMessage])
+
+  const handleTranscriptPaste = useCallback(async (transcript: string) => {
+    if (!pendingYT) return
+    setStreaming(true)
+    setPendingYT(null)
+
+    setMessages(prev => [...prev, { role: 'assistant', content: 'Transcript verwerken...' }])
+
+    try {
+      const res = await fetch('/api/youtube', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: pendingYT.url,
+          person_name: personName,
+          client_transcript: transcript,
+        }),
       })
+      const data = await res.json()
+
+      if (data.success && data.has_transcript) {
+        updateLastMessage(
+          `✓ Transcript opgeslagen! (${data.chunks_created} chunks)\n\nVraag maar wat je wilt weten over "${pendingYT.title}".`
+        )
+      } else {
+        updateLastMessage('Transcript kon niet verwerkt worden. Probeer het opnieuw met een langer fragment.')
+      }
     } catch {
-      setMessages(prev => {
-        const u = [...prev]
-        u[u.length - 1].content = 'Fout bij ophalen video. Probeer opnieuw.'
-        return u
-      })
+      updateLastMessage('Fout bij verwerken transcript.')
     }
     setStreaming(false)
-  }, [personName, fetchTranscriptClientSide])
+  }, [pendingYT, personName, updateLastMessage])
+
+  const handleTranscriptSkip = useCallback(() => {
+    setPendingYT(null)
+  }, [])
 
   const sendMessage = useCallback(async (overrideText?: string) => {
     const text = (overrideText ?? input).trim()
@@ -359,8 +404,17 @@ export default function ChatPanel({
               )}
             </div>
 
+            {/* Transcript paste modal — shown after the last message if needed */}
+            {i === messages.length - 1 && pendingYT && !streaming && (
+              <TranscriptPasteModal
+                videoTitle={pendingYT.title}
+                onSubmit={handleTranscriptPaste}
+                onSkip={handleTranscriptSkip}
+              />
+            )}
+
             {/* Action buttons */}
-            {m.role === 'assistant' && m.content && !streaming && (
+            {m.role === 'assistant' && m.content && !streaming && !pendingYT && (
               <div style={{ display: 'flex', gap: 5, opacity: 0.4, transition: 'opacity 0.2s' }}
                 onMouseEnter={e => { e.currentTarget.style.opacity = '1' }}
                 onMouseLeave={e => { e.currentTarget.style.opacity = '0.4' }}>

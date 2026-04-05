@@ -1,10 +1,8 @@
-// YouTube ingestion pipeline — direct implementation without external packages
-// Uses watch page HTML → extract captionTracks → fetch transcript XML
+// YouTube ingestion pipeline
+// Strategy: IOS innertube (best XML format) → ANDROID innertube → fallback to client_transcript
 export const runtime = 'nodejs';
 
 import { ingest } from '@/lib/ingestion';
-
-const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 function extractVideoId(url: string): string | null {
   const patterns = [
@@ -44,168 +42,123 @@ function decodeEntities(s: string): string {
 function parseTranscriptXml(xml: string): string {
   const lines: string[] = [];
 
-  // Format 3 (newer): <p t="0" d="4290"><s>people</s><s>who</s></p>
-  const pRegex = /<p\s+t="\d+"[^>]*>([\s\S]*?)<\/p>/g;
-  let pm;
-  while ((pm = pRegex.exec(xml)) !== null) {
-    const words: string[] = [];
-    const sRegex = /<s[^>]*>([^<]*)<\/s>/g;
-    let sm;
-    while ((sm = sRegex.exec(pm[1])) !== null) {
-      const w = decodeEntities(sm[1]).trim();
-      if (w) words.push(w);
-    }
-    if (words.length > 0) {
-      lines.push(words.join(' '));
-    } else {
-      const raw = pm[1].replace(/<[^>]+>/g, '');
-      const clean = decodeEntities(raw).replace(/\n/g, ' ').trim();
-      if (clean) lines.push(clean);
-    }
+  // Format 1 (IOS returns this): <text start="0" dur="4.29">content</text>
+  const tRegex = /<text[^>]*>([\s\S]*?)<\/text>/g;
+  let tm;
+  while ((tm = tRegex.exec(xml)) !== null) {
+    const clean = decodeEntities(tm[1]).replace(/\n/g, ' ').trim();
+    if (clean) lines.push(clean);
   }
 
-  // Format 1 (older): <text start="0" dur="4.29">content</text>
+  // Format 3 (ANDROID returns this): <p t="0" d="4290"><s>word</s><s>word</s></p>
   if (lines.length === 0) {
-    const tRegex = /<text[^>]*>([\s\S]*?)<\/text>/g;
-    let tm;
-    while ((tm = tRegex.exec(xml)) !== null) {
-      const clean = decodeEntities(tm[1]).replace(/\n/g, ' ').trim();
-      if (clean) lines.push(clean);
+    const pRegex = /<p\s+t="\d+"[^>]*>([\s\S]*?)<\/p>/g;
+    let pm;
+    while ((pm = pRegex.exec(xml)) !== null) {
+      const words: string[] = [];
+      const sRegex = /<s[^>]*>([^<]*)<\/s>/g;
+      let sm;
+      while ((sm = sRegex.exec(pm[1])) !== null) {
+        const w = decodeEntities(sm[1]).trim();
+        if (w) words.push(w);
+      }
+      if (words.length > 0) {
+        lines.push(words.join(' '));
+      } else {
+        // Fallback: strip tags, take raw text
+        const raw = pm[1].replace(/<[^>]+>/g, '');
+        const clean = decodeEntities(raw).replace(/\n/g, ' ').trim();
+        if (clean) lines.push(clean);
+      }
     }
   }
 
   return lines.join(' ');
 }
 
-function extractPlayerResponse(html: string): any {
-  // Try 'var ytInitialPlayerResponse = {...};'
-  const marker = 'var ytInitialPlayerResponse = ';
-  let start = html.indexOf(marker);
-  if (start === -1) {
-    // Also try without 'var '
-    const marker2 = 'ytInitialPlayerResponse = ';
-    start = html.indexOf(marker2);
-    if (start !== -1) start += marker2.length;
-  } else {
-    start += marker.length;
-  }
-  if (start <= 0) return null;
-
-  let depth = 0, end = -1;
-  for (let i = start; i < Math.min(start + 500000, html.length); i++) {
-    if (html[i] === '{') depth++;
-    else if (html[i] === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
-  }
-  if (end <= start) return null;
-
-  try { return JSON.parse(html.slice(start, end)); }
-  catch { return null; }
+interface InnertubeClient {
+  name: string;
+  clientName: string;
+  clientVersion: string;
+  userAgent: string;
 }
 
-async function fetchTranscript(videoId: string): Promise<{ text: string; error?: string }> {
-  try {
-    // Step 1: Fetch the YouTube watch page
-    const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
-      headers: {
-        'User-Agent': BROWSER_UA,
-        'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
-      },
-    });
-    if (!pageRes.ok) {
-      return { text: '', error: `Watch page HTTP ${pageRes.status}` };
-    }
-    const html = await pageRes.text();
+const INNERTUBE_CLIENTS: InnertubeClient[] = [
+  {
+    name: 'IOS',
+    clientName: 'IOS',
+    clientVersion: '20.10.38',
+    userAgent: 'com.google.ios.youtube/20.10.38 (iPhone16,2; U; CPU iOS 18_0 like Mac OS X)',
+  },
+  {
+    name: 'ANDROID',
+    clientName: 'ANDROID',
+    clientVersion: '20.10.38',
+    userAgent: 'com.google.android.youtube/20.10.38 (Linux; U; Android 14)',
+  },
+];
 
-    if (html.includes('class="g-recaptcha"')) {
-      return { text: '', error: 'YouTube CAPTCHA — te veel requests' };
-    }
+async function fetchTranscriptViaInnertube(videoId: string, client: InnertubeClient): Promise<{ text: string; error?: string }> {
+  const res = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'User-Agent': client.userAgent,
+    },
+    body: JSON.stringify({
+      context: { client: { clientName: client.clientName, clientVersion: client.clientVersion } },
+      videoId,
+    }),
+  });
+  if (!res.ok) return { text: '', error: `${client.name}: HTTP ${res.status}` };
 
-    // Step 2: Extract player response from page HTML
-    const playerData = extractPlayerResponse(html);
-    if (!playerData) {
-      return { text: '', error: 'Kon ytInitialPlayerResponse niet vinden in pagina' };
-    }
-
-    const tracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-    if (!tracks || !Array.isArray(tracks) || tracks.length === 0) {
-      // Try innertube ANDROID as fallback
-      return await fetchTranscriptViaInnertube(videoId);
-    }
-
-    // Step 3: Pick best track (nl > en > first)
-    const track =
-      tracks.find((t: any) => t.languageCode === 'nl') ||
-      tracks.find((t: any) => t.languageCode === 'en') ||
-      tracks[0];
-    if (!track?.baseUrl) {
-      return { text: '', error: 'Geen baseUrl in caption track' };
-    }
-
-    // Step 4: Fetch transcript XML (same IP session, so signature valid)
-    const xmlRes = await fetch(track.baseUrl, {
-      headers: {
-        'User-Agent': BROWSER_UA,
-        'Accept-Language': 'nl-NL,nl;q=0.9,en;q=0.7',
-      },
-    });
-    if (!xmlRes.ok) {
-      return { text: '', error: `Transcript XML HTTP ${xmlRes.status}` };
-    }
-    const xml = await xmlRes.text();
-    if (!xml || xml.length < 20) {
-      return { text: '', error: `Transcript XML leeg (${xml.length} bytes)` };
-    }
-
-    // Step 5: Parse
-    const text = parseTranscriptXml(xml);
-    if (!text) {
-      return { text: '', error: 'Kon transcript XML niet parsen' };
-    }
-    return { text };
-
-  } catch (e: any) {
-    return { text: '', error: `Onverwachte fout: ${e?.message || String(e)}` };
+  const data = await res.json();
+  const playability = data?.playabilityStatus?.status;
+  if (playability !== 'OK') {
+    return { text: '', error: `${client.name}: ${playability || 'unknown status'}` };
   }
+
+  const tracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+  if (!tracks || tracks.length === 0) {
+    return { text: '', error: `${client.name}: geen caption tracks` };
+  }
+
+  const track = tracks.find((t: any) => t.languageCode === 'nl')
+    || tracks.find((t: any) => t.languageCode === 'en')
+    || tracks[0];
+  if (!track?.baseUrl) return { text: '', error: `${client.name}: geen baseUrl` };
+
+  const xmlRes = await fetch(track.baseUrl, {
+    headers: { 'User-Agent': client.userAgent },
+  });
+  if (!xmlRes.ok) return { text: '', error: `${client.name}: XML HTTP ${xmlRes.status}` };
+
+  const xml = await xmlRes.text();
+  if (!xml || xml.length < 20) return { text: '', error: `${client.name}: XML leeg (${xml.length}b)` };
+
+  const text = parseTranscriptXml(xml);
+  if (!text) return { text: '', error: `${client.name}: XML parsing mislukt` };
+
+  return { text };
 }
 
-// Fallback: try innertube ANDROID API (works from residential IPs)
-async function fetchTranscriptViaInnertube(videoId: string): Promise<{ text: string; error?: string }> {
-  try {
-    const res = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'com.google.android.youtube/20.10.38 (Linux; U; Android 14)',
-      },
-      body: JSON.stringify({
-        context: { client: { clientName: 'ANDROID', clientVersion: '20.10.38' } },
-        videoId,
-      }),
-    });
-    if (!res.ok) return { text: '', error: `Innertube HTTP ${res.status}` };
+async function fetchTranscript(videoId: string): Promise<{ text: string; error?: string; method?: string }> {
+  const errors: string[] = [];
 
-    const data = await res.json();
-    const tracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-    if (!tracks || tracks.length === 0) {
-      return { text: '', error: 'Innertube: geen caption tracks' };
+  // Try each innertube client
+  for (const client of INNERTUBE_CLIENTS) {
+    try {
+      const result = await fetchTranscriptViaInnertube(videoId, client);
+      if (result.text && result.text.length > 50) {
+        return { text: result.text, method: client.name };
+      }
+      if (result.error) errors.push(result.error);
+    } catch (e: any) {
+      errors.push(`${client.name}: ${e.message}`);
     }
-
-    const track = tracks.find((t: any) => t.languageCode === 'nl')
-      || tracks.find((t: any) => t.languageCode === 'en')
-      || tracks[0];
-    if (!track?.baseUrl) return { text: '', error: 'Innertube: geen baseUrl' };
-
-    const xmlRes = await fetch(track.baseUrl, {
-      headers: { 'User-Agent': 'com.google.android.youtube/20.10.38 (Linux; U; Android 14)' },
-    });
-    if (!xmlRes.ok) return { text: '', error: `Innertube transcript HTTP ${xmlRes.status}` };
-    const xml = await xmlRes.text();
-    if (!xml || xml.length < 20) return { text: '', error: 'Innertube transcript leeg' };
-
-    return { text: parseTranscriptXml(xml) || '' };
-  } catch (e: any) {
-    return { text: '', error: `Innertube fout: ${e?.message || String(e)}` };
   }
+
+  return { text: '', error: errors.join(' | ') };
 }
 
 export async function POST(request: Request) {
@@ -219,23 +172,29 @@ export async function POST(request: Request) {
 
     const meta = await fetchMetadata(videoId);
 
-    // Use client-provided transcript if available, else fetch server-side
+    // Use client-provided transcript if available, else try server-side
     let transcript = '';
     let transcriptError = '';
+    let transcriptMethod = '';
+
     if (typeof client_transcript === 'string' && client_transcript.length > 50) {
       transcript = client_transcript;
+      transcriptMethod = 'client';
     } else {
       const result = await fetchTranscript(videoId);
       transcript = result.text;
       transcriptError = result.error || '';
+      transcriptMethod = result.method || '';
     }
+
+    const hasTranscript = transcript.length > 100;
 
     const content = [
       `Kanaal: ${meta.channel}`,
       `URL: https://www.youtube.com/watch?v=${videoId}`,
       meta.thumbnail ? `Thumbnail: ${meta.thumbnail}` : null,
       '',
-      transcript
+      hasTranscript
         ? `Transcript:\n${transcript}`
         : '(Geen transcript beschikbaar voor deze video)',
     ].filter(Boolean).join('\n');
@@ -254,7 +213,8 @@ export async function POST(request: Request) {
       personName,
       ownerId,
       originalUrl: `https://www.youtube.com/watch?v=${videoId}`,
-      externalId: transcript.length > 100 ? `youtube_${videoId}_t` : `youtube_${videoId}`,
+      // Use _t suffix when we have transcript, to re-ingest over a previous no-transcript version
+      externalId: hasTranscript ? `youtube_${videoId}_t` : `youtube_${videoId}`,
       ingestedVia: 'youtube_panel',
     });
 
@@ -264,8 +224,11 @@ export async function POST(request: Request) {
       channel: meta.channel,
       thumbnail: meta.thumbnail,
       video_id: videoId,
-      has_transcript: transcript.length > 100,
+      has_transcript: hasTranscript,
+      transcript_method: transcriptMethod || null,
       transcript_error: transcriptError || null,
+      // Signal to client: if no transcript, offer paste option
+      needs_client_transcript: !hasTranscript && !client_transcript,
       source_id: result.sourceId,
       chunks_created: result.chunksCreated,
       status: result.status,
