@@ -55,7 +55,14 @@
       "WebSearch",
       "WebFetch(domain:supadata.ai)",
       "WebFetch(domain:scrapecreators.com)",
-      "Bash(PATH=\"/opt/homebrew/bin:/opt/homebrew/opt/node/bin:$PATH\" npm install youtube-transcript-plus)"
+      "Bash(PATH=\"/opt/homebrew/bin:/opt/homebrew/opt/node/bin:$PATH\" npm install youtube-transcript-plus)",
+      "WebFetch(domain:www.quaternity.com)",
+      "WebFetch(domain:play.quaternity.com)",
+      "Bash(/opt/homebrew/bin/npx tsc:*)",
+      "Bash(grep -r \"firebase\\\\|supabase\\\\|websocket\\\\|socket.io\\\\|realtime\" /Users/thewhiterabbit/zetmop --include=*.ts --include=*.tsx --include=*.json)",
+      "mcp__mcp-registry__search_mcp_registry",
+      "Bash(ls /Users/thewhiterabbit/zetmop/.env*)",
+      "Bash(curl -s \"https://wubbo.vercel.app/api/youtube/debug?v=XCjeiW9NqPE\")"
     ]
   }
 }
