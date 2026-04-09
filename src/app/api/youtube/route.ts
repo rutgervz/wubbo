@@ -1,5 +1,5 @@
 // YouTube ingestion pipeline
-// Strategy: IOS innertube (best XML format) → ANDROID innertube → fallback to client_transcript
+// Strategy: IOS/ANDROID innertube → Gemini video analysis → client paste fallback
 export const runtime = 'nodejs';
 
 import { ingest } from '@/lib/ingestion';
@@ -142,10 +142,66 @@ async function fetchTranscriptViaInnertube(videoId: string, client: InnertubeCli
   return { text };
 }
 
+// Gemini video analysis — sends YouTube URL to Gemini 2.0 Flash which can "watch" the video
+async function fetchViaGemini(videoId: string): Promise<{ text: string; error?: string }> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return { text: '', error: 'Geen GEMINI_API_KEY geconfigureerd' };
+
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              {
+                text: [
+                  'Maak een uitgebreid verslag van deze YouTube video in het Nederlands.',
+                  'Structuur:',
+                  '1. SAMENVATTING: 2-3 zinnen kernboodschap',
+                  '2. SPREKERS: wie komen er aan het woord, wat is hun rol',
+                  '3. HOOFDPUNTEN: alle belangrijke punten, inzichten en argumenten',
+                  '4. QUOTES: letterlijke citaten die opvallen (in het Engels als de video Engels is)',
+                  '5. CONTEXT: achtergrond en relevantie',
+                  '',
+                  'Wees zo gedetailleerd mogelijk. Dit verslag wordt opgeslagen als kennisbron.',
+                ].join('\n'),
+              },
+              {
+                fileData: {
+                  fileUri: `https://www.youtube.com/watch?v=${videoId}`,
+                  mimeType: 'video/*',
+                },
+              },
+            ],
+          }],
+        }),
+      }
+    );
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      const errMsg = errData?.error?.message || `HTTP ${res.status}`;
+      return { text: '', error: `Gemini: ${errMsg}` };
+    }
+
+    const data = await res.json();
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    if (!text || text.length < 50) {
+      return { text: '', error: 'Gemini: leeg antwoord' };
+    }
+    return { text };
+  } catch (e: any) {
+    return { text: '', error: `Gemini: ${e?.message || String(e)}` };
+  }
+}
+
 async function fetchTranscript(videoId: string): Promise<{ text: string; error?: string; method?: string }> {
   const errors: string[] = [];
 
-  // Try each innertube client
+  // Step 1: Try innertube (fast, exact transcript)
   for (const client of INNERTUBE_CLIENTS) {
     try {
       const result = await fetchTranscriptViaInnertube(videoId, client);
@@ -156,6 +212,17 @@ async function fetchTranscript(videoId: string): Promise<{ text: string; error?:
     } catch (e: any) {
       errors.push(`${client.name}: ${e.message}`);
     }
+  }
+
+  // Step 2: Try Gemini video analysis (watches the video, generates summary)
+  try {
+    const geminiResult = await fetchViaGemini(videoId);
+    if (geminiResult.text && geminiResult.text.length > 100) {
+      return { text: geminiResult.text, method: 'gemini' };
+    }
+    if (geminiResult.error) errors.push(geminiResult.error);
+  } catch (e: any) {
+    errors.push(`Gemini: ${e.message}`);
   }
 
   return { text: '', error: errors.join(' | ') };
@@ -187,16 +254,17 @@ export async function POST(request: Request) {
       transcriptMethod = result.method || '';
     }
 
-    const hasTranscript = transcript.length > 100;
+    const hasContent = transcript.length > 100;
+    const isGemini = transcriptMethod === 'gemini';
 
     const content = [
       `Kanaal: ${meta.channel}`,
       `URL: https://www.youtube.com/watch?v=${videoId}`,
       meta.thumbnail ? `Thumbnail: ${meta.thumbnail}` : null,
       '',
-      hasTranscript
-        ? `Transcript:\n${transcript}`
-        : '(Geen transcript beschikbaar voor deze video)',
+      hasContent
+        ? (isGemini ? `Verslag (via Gemini video analyse):\n${transcript}` : `Transcript:\n${transcript}`)
+        : '(Geen transcript of verslag beschikbaar voor deze video)',
     ].filter(Boolean).join('\n');
 
     const PERSON_OWNER_MAP: Record<string, string> = {
@@ -214,7 +282,7 @@ export async function POST(request: Request) {
       ownerId,
       originalUrl: `https://www.youtube.com/watch?v=${videoId}`,
       // Use _t suffix when we have transcript, to re-ingest over a previous no-transcript version
-      externalId: hasTranscript ? `youtube_${videoId}_t` : `youtube_${videoId}`,
+      externalId: hasContent ? `youtube_${videoId}_t` : `youtube_${videoId}`,
       ingestedVia: 'youtube_panel',
     });
 
@@ -224,11 +292,11 @@ export async function POST(request: Request) {
       channel: meta.channel,
       thumbnail: meta.thumbnail,
       video_id: videoId,
-      has_transcript: hasTranscript,
+      has_transcript: hasContent,
       transcript_method: transcriptMethod || null,
       transcript_error: transcriptError || null,
       // Signal to client: if no transcript, offer paste option
-      needs_client_transcript: !hasTranscript && !client_transcript,
+      needs_client_transcript: !hasContent && !client_transcript,
       source_id: result.sourceId,
       chunks_created: result.chunksCreated,
       status: result.status,

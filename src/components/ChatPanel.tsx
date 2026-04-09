@@ -154,9 +154,10 @@ export default function ChatPanel({
       }
 
       if (data.has_transcript) {
-        // Server got the transcript — done!
+        // Server got content — transcript or Gemini summary
+        const methodLabel = data.transcript_method === 'gemini' ? 'Gemini video analyse' : `transcript via ${data.transcript_method || 'server'}`
         updateLastMessage(
-          `**${data.title}**\nKanaal: ${data.channel}\n\n✓ Transcript opgeslagen (${data.chunks_created} chunks, via ${data.transcript_method || 'server'})\n\nVraag maar wat je wilt weten over deze video.`
+          `**${data.title}**\nKanaal: ${data.channel}\n\n✓ Opgeslagen (${data.chunks_created} chunks, ${methodLabel})\n\nVraag maar wat je wilt weten over deze video.`
         )
         setStreaming(false)
         return
